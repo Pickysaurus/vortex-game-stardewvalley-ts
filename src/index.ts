@@ -1,85 +1,60 @@
-import { log, selectors, types } from "vortex-api";
-import { IGameExt, ISaveGameData } from './types';
-import SavedGamesPage from './views/SavedGamesPage';
-import SaveGameSessionReducer from './reducers/SaveGameSessionReducer';
-import * as actions from './actions/SaveGameSessionActions';
-import examples from './examples/save-examples';
+import { log, selectors } from "vortex-api";
+import { IExtensionContext } from 'vortex-api/lib/types/api';
+import { GAME_ID } from "./common";
+import { testSMAPI, installSMAPI, isSMAPIModType } from './installers/smapi';
+import { testSupported, install } from './installers/smapi-mods';
+import { testRootFolder, installRootFolder, isRootFolderMod } from './installers/root-folder';
+import onShowSMAPILog from './actions/showSMAPILog';
+import handleAddedFiles from './events/handleAddedFiles';
+import modToggled from './events/modToggled';
+import StardewValley from './StardewValley';
 
+function main(context: IExtensionContext) {
+    // Register the game so it can be discovered.
+    context.registerGame(new StardewValley(context));
 
-//This is the main function Vortex will run when detecting the game extension. 
-function main(context: types.IExtensionContext) {
+    // A utility function to get the game folder.
+    const getDiscoveryPath = (): string => {
+        const state = context.api.getState();
+        const discovery = state.settings?.gameMode?.discovered?.[GAME_ID];
+        if (!discovery || !discovery.path) {
+            // SDV isn't discovered
+            log('error', 'Stardew Valley game path could not be found as the game is not discovered');
+            return undefined;
+        }
+        return discovery.path;
+    }
 
-    context.registerReducer(['session', 'savegames'], SaveGameSessionReducer);
+    // Register the installers and modtypes we'll need to handle differen kinds of mod. 
 
-    context.registerMainPage('savegame', 'Save Games', SavedGamesPage, {
-        id: 'saved-games-page',
-        hotkey: 'S',
-        group: 'per-game',
-        visible: () => {
-            const state: types.IState = context.api.getState();
-            const gameId: string = selectors.activeGameId(state);
-            const game: IGameExt = selectors.gameById(state, gameId);
-            if (!game) return false;
-            if (!game.saves && !examples[game.id]) return false;
-            return true;
-        },
-        priority: 120,
-        props: () => {}
+    // Regular SMAPI mods containing a manifest.json - placed in the "Mods folder"
+    context.registerInstaller('stardew-valley-installer', 50, testSupported, (files, destinationPath) => install(context, files, destinationPath));
+
+    // SMAPI - special logic to install SMAPI into Vortex as a mod. 
+    context.registerInstaller('smapi-installer', 30, testSMAPI, (files, dest) => installSMAPI(getDiscoveryPath, files, dest));
+    context.registerModType('SMAPI', 30, gameId => gameId === GAME_ID, getDiscoveryPath, isSMAPIModType);
+
+    // Other mods that need to be added to the root folder
+    // This includes XNBs (redundant) which overwrite the "Content" folder,
+    // and Mods that include both SMAPI Mods and items for the Content folder.
+    // It's possible this modtype won't get used anymore but it's a good fallback.
+    context.registerInstaller('sdvrootfolder', 50, testRootFolder, installRootFolder);
+    context.registerModType('sdvrootfolder', 25, (gameId) => (gameId === GAME_ID), () => getDiscoveryPath(), isRootFolderMod);
+
+    // Add a button to the mods toolbar which allows the user to view and export a SMAPI log file. 
+    context.registerAction(
+        'mod-icons', 999, 'changelog', {}, 
+        // @ts-ignore the function here doesn't allow a promise by type but it works just fine. 
+        'SMAPI Log', () => onShowSMAPILog(context.api), 
+        () => selectors.activeGameId(context.api.getState()) === GAME_ID
+    );
+
+    context.once(() => {
+        context.api.onAsync('added-files', (profileId, files) => handleAddedFiles(context.api, profileId, files));
+        context.api.events.on('mod-enabled', (profileId: string, modId: string) => modToggled(context.api, profileId, modId));
+        // context.api.events.on('mod-disabled', (profileId: string, modId: string) => modToggled(context.api, profileId, modId));
     });
-
-    context.once(() => contextOnce(context));
-
     return true;
-}
-
-function contextOnce(context: types.IExtensionContext) {
-    context.api.events.on('profile-did-change', (newProfileId: string) => {
-        // When the profile changes, we want to check where our saves path is.
-        const state = context.api.getState();
-        const profile: types.IProfile = selectors.profileById(state, newProfileId);
-        const game: IGameExt = selectors.gameById(state, profile.gameId);
-        const saveData: ISaveGameData = game.saves || examples[game.id];
-        if (!saveData) return;
-        else context.api.store.dispatch(actions.setSavesPath(saveData.saveFolder(context.api, profile.id)));
-    });
-
-    context.api.events.on('get-saves', async (game: IGameExt, profileId: string, callback: () => void, overwrite?: boolean) => {
-        if (!game.saves && !examples[game.id]) return;
-        const state = context.api.getState();
-
-        // Check we can actually process these saves.
-        const saveData: ISaveGameData = game.saves || examples[game.id];
-        const savePath: string = (state as any)?.session?.savegames?.savesPath;
-        if (!saveData || !savePath) log('error', 'Unable to process saved games', game);
-
-        // CHECK FOR PROFILE SPECIFIC SAVES (TBC!)
-
-        // END PROFILES LOGIC
-        
-        let saves = [];
-        // Use the quick fetch function
-        try {
-            saves = await saveData.quickParse(savePath);
-        }
-        catch(err) {
-            log('error', `Could not perform quick parse on saves for ${game.id}`, savePath);
-        }
-
-        // Commit what we have to the state and trigger the callback.
-        context.api.store.dispatch(actions.setCurrentSaves(saves));
-
-        // Use the full fetch function
-        try {
-            saves = await saveData.fullParse(savePath, saves);
-            context.api.store.dispatch(actions.setCurrentSaves(saves));
-        }
-        catch(err) {
-            log('error', `Could not perform full parse on saves for ${game.id}`, savePath);
-        }
-
-        callback();
-
-    });
 }
 
 module.exports = {
