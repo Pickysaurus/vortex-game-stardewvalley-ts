@@ -32,7 +32,8 @@ export default class StardewValley implements types.IGame {
         this.details = {
             steamAppId: parseInt(STEAMAPP_ID),
             gogAppId: GOGAPP_ID,
-            xboxAppId: XBOXAPP_ID
+            xboxAppId: XBOXAPP_ID,
+            saves: SDVSaves
         };
         this.supportedTools = [
             {
@@ -50,7 +51,7 @@ export default class StardewValley implements types.IGame {
         this.mergeMods = true;
         this.requiresCleanup = true;
         this.shell = process.platform == 'win32';
-        this.saves = SDVSaves;
+        // this.saves = SDVSaves;
     }
 
     async queryPath() {
